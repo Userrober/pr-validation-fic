@@ -356,6 +356,37 @@ The framework here (FIC + SP REST + Playwright + page.evaluate) **can do far mor
 
 Only after you've run/evaluated all 6 with concrete negative evidence can you declare Pattern D unreachable. **"It feels hard" is not evidence. Console logs are.**
 
+### `page.route()` recipe — inject backend-aggregated metrics
+
+When a UI is gated on a backend-aggregated metric (Analytics, telemetry, ML score) that would take hours to produce naturally, intercept the API and inject a synthetic response. This unlocks surfaces previously declared unreachable.
+
+**Real example (PR 2225561 D3 `CustomizeViewDrawer`)**: gated on `noDimensionsReport.AudienceIsEveryone='true'` from `GetCampaignPreaggregatedAnalyticsReport` (a backend Analytics aggregation needing hours of read telemetry). Intercept made it fully visible:
+
+```typescript
+import type { Route, Request as PWRequest } from '@playwright/test';
+
+// Register BEFORE page.goto — Playwright captures the request only if route
+// is attached before navigation.
+await page.route('**/oneDrive.GetCampaignPreaggregatedAnalyticsReport*',
+  async (route: Route, request: PWRequest) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json;odata.metadata=minimal',
+      body: JSON.stringify({ value: [{ campaignId: 'fake', reports: [...], timestamp: '...' }] })
+    });
+  }
+);
+await page.goto(url);
+```
+
+**Critical gotchas** (each one cost an iteration on D3):
+
+1. **Find the real endpoint URL** — grep the data provider call → trace to its endpoint constant. For Vinci/Amplify Analytics: `data-providers/sp-vinci-data-provider/src/consts/AnalyticsEndpoints.ts`. Full URL is `<webUrl>/_api/<relativeUrl>` (see `_generateUrl` in `VinciDataProvider.ts`).
+2. **Schema MUST be exact**. If the response is consumed by enum conversion (e.g. `convertEndpointTypeToChannel` does case-insensitive matching against `Channel` enum keys), wrong values return `undefined` and crash downstream React (`Cannot read properties of undefined (reading 'label')`). Use the real enum values, not numeric IDs.
+3. **Report ordering matters**. `reportQueries` order determines `reports[]` indexing in the consumer hook. Check the consumer (e.g. `CampaignLandingReportingTab.tsx` reads `reports[1]` as `noDimensionsReport`, `reports[0]` as `endpointTypeDimensionReport`).
+4. **Add diagnostic plumbing in the spec**: log `interceptCount`, `page.on('console')` for `error`, `page.on('pageerror')`, and a DOM probe right before clicking. When the route fires but the page goes blank, the schema is broken and React unmounted — the page errors tell you which field is wrong.
+5. **Reference mock data**: search for existing `*.mock.ts` files in the repo (e.g. `apps/sp-vinci/src/mocks/noDimensionsReport.mock.ts`) — they have the exact shape and metric ordering the product expects.
+
 ---
 
 ## Working spec examples by pattern
@@ -368,8 +399,9 @@ Only after you've run/evaluated all 6 with concrete negative evidence can you de
 | A (multi-flight) | `PR2218733AnalyticsPanel.spec.ts` | 6 flights combined |
 | A (**news + REST prereq**) | `PR2225561D9AmplifyHeader.spec.ts` | Create page + publish + REST `PromotedState=2` before `amplifyButton` appears; BEFORE branch needs extra "Update then amplify" popover click |
 | A (**Amplify hub multi-step**) | `PR2225561D8CampaignCreation.spec.ts` | viva-amplify.aspx + "Create a campaign" → alertdialog → "Blank campaign" → drawer |
+| A (**page.route inject backend metric**) | `PR2225561D3CustomizeView.spec.ts` | Intercept `GetCampaignPreaggregatedAnalyticsReport`, inject `AudienceIsEveryone='true'` so source-code guard `props.options.length !== 0` opens the drawer. Reference for any surface gated on a backend-aggregated value. |
 | B+C (REST + multi-user) | `PR2219504LikedByPanel.spec.ts` | admin posts comment, nonAdmin likes |
-| D (probe first, escalate only if unreachable) | — | PR 2219485 PlanCreation: probe Planner picker → 0 results → skipped; PR 2225561 D3 CustomizeView: source `options.length !== 0` guard + backend Analytics `AudienceIsEveryone` data gate → unreachable on synthetic tenant → prBuildCount evidence + explanation doc |
+| D (probe first, escalate only if unreachable) | — | PR 2219485 PlanCreation: probe Planner picker → 0 results → skipped. PR 2225561 D3 initially looked like Pattern D (gated on backend Analytics metric `AudienceIsEveryone`), but `page.route()` interception of the analytics endpoint unblocked it → see `PR2225561D3CustomizeView.spec.ts`. Lesson: most "Pattern D" surfaces are actually reachable via network interception. |
 
 ---
 
