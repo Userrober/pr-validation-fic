@@ -1,72 +1,81 @@
 # pr-validation-fic
 
-Capture BEFORE/AFTER screenshots for SharePoint client PRs on the FIC synthetic tenant.
+A Claude Code plugin that captures **BEFORE/AFTER** screenshots for SharePoint client PRs on Microsoft's internal FIC synthetic tenant. Claude reads the PR description, picks the right trigger pattern, writes a custom Playwright spec, runs it twice (prod CDN vs PR build via debug link), and gives you two full-page screenshots ready to drop into the PR description.
 
-## What it does
+> **Audience:** this plugin is built for engineers working in the Microsoft `onedrive/odsp-web` monorepo. It will not do anything useful outside that repo.
 
-Give Claude a PR number — it reads the PR description and changed files, decides what trigger
-pattern fits (simple click, REST setup, multi-user, external dependency), writes a custom
-Playwright spec at `sp-client/integration-tests/sp-pages-playwright/src/test/PRValidation/`,
-runs it twice (once against prod CDN for BEFORE, once with the PR build's debug link for
-AFTER), and produces two full-page screenshots ready to drop into the PR description.
+## One-line install
 
-Tenant state is mutated when needed (page creation, list-setting toggles, REST seeding,
-second-user actions) and cleaned up in a `finally` block so the shared synthetic tenant
-stays clean for the next run.
-
-## Install
-
-In your Claude Code project's `.claude/settings.json`:
-
-```json
-{
-  "extraKnownMarketplaces": {
-    "pr-validation-fic-marketplace": {
-      "source": {
-        "source": "github",
-        "repo": "Userrober/pr-validation-fic"
-      }
-    }
-  },
-  "enabledPlugins": {
-    "pr-validation-fic@pr-validation-fic-marketplace": true
-  }
-}
+```bash
+claude plugin marketplace add Userrober/pr-validation-fic && claude plugin install pr-validation-fic@pr-validation-fic-marketplace
 ```
 
-Restart Claude Code. The `pr-validation-fic` skill becomes available.
-
-## Prerequisites
-
-- `odsp-web` repo with `rush install` complete
-- `az login` against the Microsoft tenant (so the skill can fetch the PR debug link from ADO)
-- VPN / network access to `odspwebcidev.z13.web.core.windows.net` (PR build CDN)
-
-## Usage
-
-In Claude Code, just say:
+Restart Claude Code after installing. The `pr-validation-fic` skill becomes available — invoke it by mentioning a PR number, e.g.:
 
 > validate PR 2219541 with pr-validation-fic
 
-Claude loads the skill, walks the 6 steps, drops screenshots into
-`temp/playwright/PR-validation-final-v2/`, and tells you the markdown
-attachment snippet to paste into the PR description.
+## What it actually does
 
-## How it relates to other validation tools
+When invoked, Claude:
 
-This skill is the **per-PR custom-spec capture path**. It is intentionally allowed to
-mutate tenant state (list settings, page creation, REST seeding) — which means it can
-capture surfaces that fixed-page automation cannot. See the SKILL.md "What this skill
-actually does" section for the full contract.
+- Reads the PR description + changed files to infer where the UI lives and what setup it needs
+- Picks the right reference pattern (simple click / REST setup / multi-user / external dependency)
+- Writes a brand-new Playwright spec per PR at `sp-client/integration-tests/sp-pages-playwright/src/test/PRValidation/`
+- Mutates tenant state when needed (creates pages, toggles list moderation, posts REST data, drives a second user, etc.) and **self-cleans in a `finally` block**
+- Runs the spec, reads probe logs, captures BEFORE/AFTER screenshots, moves them to a curated folder
+- Hands you the markdown attachment snippet to paste into the PR description
+
+Surfaces that need list-setting changes, multi-user setup, or REST-seeded data are in scope. Even Pattern D (external web-part dependency) is **probed first** — only after a quick reachability check proves the dependency truly isn't registered on the synthetic tenant does it fall back to manual handoff.
+
+## Prerequisites
+
+You'll need a working `odsp-web` checkout:
+
+- The `onedrive/odsp-web` repo (access required)
+- `rush install` has completed at the repo root
+- `az login` against the Microsoft tenant — the skill needs `az account get-access-token` to fetch the PR's debug link from ADO
+- Network access to the internal PR build CDN (corp VPN usually fine)
+
+The synthetic tenant itself is shared and pre-provisioned — no per-user setup.
+
+## Usage
+
+After install, in any Claude Code session inside the `odsp-web` repo:
+
+```
+validate PR <number> with pr-validation-fic
+```
+
+Claude walks the 6 steps documented in `skills/pr-validation-fic/SKILL.md`:
+
+1. Fetch PR debug link from ADO
+2. Pick flights (usually just `1535` for Wave-6 Panel→Drawer PRs)
+3. Identify trigger pattern (A / B / C / D)
+4. Write the spec
+5. Run BEFORE + AFTER in parallel
+6. Verify probe signals + collect screenshots
+
+Output lands at `sp-client/integration-tests/sp-pages-playwright/temp/playwright/PR-validation-final-v2/`.
+
+## Uninstall
+
+```bash
+claude plugin uninstall pr-validation-fic@pr-validation-fic-marketplace
+claude plugin marketplace remove pr-validation-fic-marketplace
+```
 
 ## Layout
 
 ```
-pr-validation-fic-plugin/
-  .claude-plugin/
-    plugin.json
-  skills/
-    pr-validation-fic/
-      SKILL.md
-  README.md
+.claude-plugin/
+  marketplace.json   # single-plugin marketplace wrapper
+  plugin.json        # plugin metadata
+skills/
+  pr-validation-fic/
+    SKILL.md         # the full skill content
+README.md
 ```
+
+## Source of truth
+
+The canonical SKILL.md lives in the `odsp-web` repo at `.ai/pr-validation-fic-plugin/skills/pr-validation-fic/SKILL.md`. This GitHub repo is a published mirror so Claude Code can fetch it as a marketplace.
