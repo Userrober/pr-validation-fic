@@ -18,7 +18,7 @@ Give a PR number. Get two fullpage screenshots (`BEFORE` = prod CDN render, `AFT
 This is **not** a "run a fixed pre-existing spec against a fixed page" flow. When invoked, Claude:
 
 - **Reads the PR description + changed files** to infer where the changed UI lives, what triggers it, and what setup it needs (data seeding, list settings, second user, web part dependency, etc.)
-- **Picks the right reference pattern** (A / B / C / D in Step 3) from `src/test/PRValidation/` and adapts it — not a single hardcoded flow
+- **Picks the right reference pattern** (A / B / C / D in Step 4) from `src/test/PRValidation/` and adapts it — not a single hardcoded flow
 - **Writes a brand-new spec per PR** with the right page setup, REST calls, trigger selector, and probe assertions
 - **Mutates tenant state when needed** (create page, enable list moderation, add web part, post comment as another user, etc.) — and **self-cleans in a `finally` block** so the synthetic tenant is left clean for the next run
 - **Runs the spec, reads probe logs, captures BEFORE/AFTER screenshots**, moves them to the curated folder
@@ -60,12 +60,13 @@ Surfaces that need list-setting changes, multi-user setup, or REST-seeded data a
 ```
 1. Get PR debug link        → 1 curl  (Step 1)
 2. Pick flights             → usually just '1535'  (Step 2)
-3. Identify trigger pattern → A / B+C / D  (Step 3)
-4. Copy a template          → templates/pattern-A-simple-click.spec.ts.template
-5. Replace placeholders, save as src/test/PRValidation/PR<N><Comp>.spec.ts
-6. cd sp-client/integration-tests/sp-pages-playwright && rushx playwright --grep "PR #<N>"
-7. Read probe logs — AFTER must show prBuildCount > 0
-8. Screenshots in temp/playwright/<BEFORE|AFTER>-pr<N>-<comp>-fullpage.png
+3. Trigger discovery        → read .tsx + .resx, grep consumer, check render gate  (Step 3)
+4. Identify trigger pattern → A / B+C / D  (Step 4)
+5. Copy a template          → templates/pattern-A-simple-click.spec.ts.template
+6. Replace placeholders, save as src/test/PRValidation/PR<N><Comp>.spec.ts
+7. cd sp-client/integration-tests/sp-pages-playwright && rushx playwright --grep "PR #<N>"
+8. Read probe logs — AFTER must show prBuildCount > 0
+9. Screenshots in temp/playwright/<BEFORE|AFTER>-pr<N>-<comp>-fullpage.png
 ```
 
 ---
@@ -77,7 +78,7 @@ Surfaces that need list-setting changes, multi-user setup, or REST-seeded data a
 | **PR number** | The PR you want to validate |
 | **PR debug link** (PR_LOADER URL + PR_MANIFESTS URL) | ADO PR comment threads — see Step 1 |
 | **Flight number(s)** | PR description "Visual verification" section, e.g. `1535`. Default for Wave-6 Panel→Drawer = `1535` |
-| **Trigger selector + setup needed** | DOM selector that opens the changed UI, PLUS any data setup (comment, like, web part) required. See Step 3 + "Trigger pattern catalog" |
+| **Trigger selector + setup needed** | DOM selector that opens the changed UI, PLUS any data setup (comment, like, web part) required. See Step 3 (discovery) + Step 4 (pattern) + "Trigger pattern catalog" |
 
 ---
 
@@ -124,7 +125,27 @@ Multiple flights: comma-separate. Negative: `!N`.
 
 ---
 
-## Step 3 — Identify trigger pattern
+## Step 3 — Trigger discovery 5-step checklist (do these in order)
+
+**Never guess what page the trigger lives on or what button label to click.** Use the PR's changed file names / exports to locate the real trigger:
+
+### The 5 steps
+
+1. **Read the PR's changed `.tsx` main file** — note whether it's a Drawer / Panel / Popover / Dialog, and check if the top-level `return` has a **short-circuit guard** like `props.X.length !== 0 ? ... : null` or `if (!enabled) return null`. If so, record it as a data prerequisite.
+
+2. **Read the matching `.resx` file** (same name / same directory) — grab the **real button text**. Component name = drawer title; button text usually lives in keys like `EditViewButtonLabel`, `TriggerButtonAriaLabel`. Example: `CustomizeViewDrawer`'s button text is `EditViewButtonLabel = "Edit view"` — searching for "Customize view" will never find it.
+
+3. **`grep -rln "<ExportName>" sp-client/apps`** — find who mounts the component. `AmplifyDrawerHeader`'s consumer is `AmplifyCommandBarItem`, mounted in the SitePage command bar — NOT in viva-amplify. **Package names often give it away**: `sp-amplify-from-anywhere` ⇒ triggered from SitePage, not the Amplify hub.
+
+4. **Read the consumer's render gate** — command bar mounts usually have a `_shouldShowXButton()` function listing every prerequisite. Chains like `isNewsPost() + displayMode === Read + hasPageBeenPublished()` must all be true. List them as spec setup steps.
+
+5. **Prefer `data-automation-id` as selector** — grep the consumer for `'data-automation-id': 'xxxButton'`. 10× more stable than role/text selectors.
+
+**Only declare Pattern D (external dependency) after walking all 5 steps.** Skipping steps 1–2 wastes an iteration — e.g. D3 first attempt used "Customize view" instead of the real "Edit view" label and failed for the wrong reason.
+
+---
+
+## Step 4 — Identify trigger pattern
 
 Match your PR to one of these patterns. Each has a working reference spec in `src/test/PRValidation/` — when writing a new spec, read the closest match as a starting point.
 
@@ -189,9 +210,9 @@ PR's UI is inside a 3rd-party web part or external product surface (Planner, Str
 
 ---
 
-## Step 4 — Write the spec
+## Step 5 — Write the spec
 
-Pick the closest reference spec from Step 3 as your starting point (e.g. copy `PR2219541LikesPanel.spec.ts` for Pattern A, `PR2219504LikedByPanel.spec.ts` for Pattern B+C). Replace these values:
+Pick the closest reference spec from Step 4 as your starting point (e.g. copy `PR2219541LikesPanel.spec.ts` for Pattern A, `PR2219504LikedByPanel.spec.ts` for Pattern B+C). Replace these values:
 
 | Replace | With |
 |---|---|
@@ -208,7 +229,7 @@ Save to `src/test/PRValidation/PR<NUMBER><Component>.spec.ts`.
 
 ---
 
-## Step 5 — Run
+## Step 6 — Run
 
 ```bash
 cd sp-client/integration-tests/sp-pages-playwright
@@ -230,7 +251,7 @@ mv temp/playwright/*pr<NUMBER>*.png temp/playwright/PR-validation-final-v2/
 
 ---
 
-## Step 6 — Verify
+## Step 7 — Verify
 
 Read console output for each variant. Healthy signals:
 
@@ -263,6 +284,80 @@ Read console output for each variant. Healthy signals:
 
 ---
 
+## Prerequisite checklist (by trigger type)
+
+Before writing the spec, look up the target button's **render gate conditions** in this table and satisfy them in your spec setup. **Miss one ⇒ the button never renders ⇒ spec runs to no-op.**
+
+| Trigger | Prerequisites | How to satisfy |
+|---|---|---|
+| **`amplifyButton`** (Amplify From Anywhere) | `isNewsPost() = true` + Read mode + `hasPageBeenPublished()` + Amplify license | `createNewSitePageASPX` + `publishSitePage` + REST `validateUpdateListItem` setting `PromotedState=2` |
+| **`promoteButton`** (page promote) | Default SitePage command bar | Create page + publish |
+| **`analyticsButton`** | Default | Create page + publish |
+| **Social bar like/comment/bookmark** | Default | Create page + publish |
+| **`sp-socialbar-likedbymessage`** | `likeCount > 0` and `!userLiked` | nonAdmin REST `/Comments(id)/like` |
+| **`sp-socialbar-likedbycommentmessage`** | Comment liked and `!userLikedComment` | admin posts comment + nonAdmin REST `/Comments(id)/like` |
+| **CustomizeViewDrawer (D3)** | `props.options.length !== 0` ← `showWholeOrgToggle=true` ← backend `noDimensionsReport.AudienceIsEveryone='true'` | Not satisfiable directly — requires whole-org channel publish + Analytics pipeline (hours of latency). **Unreachable on synthetic tenant.** |
+| **Any "news"-related surface** | `PromotedState ∈ {1, 2}` | REST `validateUpdateListItem` |
+
+**First time hitting a new trigger ⇒ walk the 5-step discovery from Step 3, then add the prereqs to this table.**
+
+### SP REST cookbook
+
+These REST calls recur — memorize once and stop re-looking-up:
+
+```typescript
+// Get request digest (required before any write)
+const digest = (await (await fetch(`${webUrl}/_api/contextinfo`, {method:'POST'})).json()).FormDigestValue;
+
+// Get page list item ID + Site Pages list ID
+const pageItemId = (await (await fetch(`${webUrl}/_api/web/getFileByServerRelativeUrl('${path}')/ListItemAllFields?$select=Id`)).json()).Id;
+const listId = (await (await fetch(`${webUrl}/_api/web/lists/getbytitle('Site Pages')/Id`)).json()).value;
+
+// Promote page to news (PromotedState=2 = published news)
+await fetch(`${webUrl}/_api/web/lists('${listId}')/items(${pageItemId})/validateUpdateListItem`, {
+  method:'POST', headers:{'X-RequestDigest':digest,'content-type':'application/json;odata=nometadata'},
+  body: JSON.stringify({formValues:[{FieldName:'PromotedState',FieldValue:'2'}], bNewDocumentUpdate:false})
+});
+
+// Post comment
+await fetch(`${webUrl}/_api/web/lists('${listId}')/GetItemById(${pageItemId})/Comments`, {
+  method:'POST', headers:{'X-RequestDigest':digest,'content-type':'application/json;odata=nometadata'},
+  body: JSON.stringify({text: 'hello'})
+});
+
+// Like a comment (as a second user)
+await fetch(`${webUrl}/_api/web/lists('${listId}')/GetItemById(${pageItemId})/Comments('${commentId}')/like`, {
+  method:'POST', headers:{'X-RequestDigest':digest,'content-type':'application/json;odata=nometadata'}, body:'{}'
+});
+```
+
+---
+
+## Decision & roadblock strategy
+
+### User gives a cascade ("if 1 fails, then 2, then 4") ⇒ execute through, do NOT confirm mid-cascade
+
+When the user provides an `A → B → C` cascade:
+- Run A. Move to B only if A produces a concrete negative signal (not "I feel like A is hard").
+- Same for B.
+- **Do NOT pause to ask "Should I continue to B?"** — the user already answered. Re-asking is noise.
+- Only stop to re-check with the user when **all cascade steps are exhausted** OR a new situation appears that the cascade doesn't cover.
+
+### Before declaring something unreachable — try more angles
+
+The framework here (FIC + SP REST + Playwright + page.evaluate) **can do far more than first instinct suggests**. Before declaring any surface unreachable, consider these 6 angles:
+
+1. **Change the trigger selector** — the button text may not be what you think; read the .resx
+2. **Change the mount path** — the component may not live on the page you assumed; grep its consumer
+3. **Seed data via SP REST** — PromotedState, comments, likes, bookmarks, list settings are all POSTable
+4. **Multi-user moves** — admin + nonAdmin + globalReader are all ready-to-use fixtures
+5. **`page.route()` network interception** — inject fake API responses (great for backend-aggregated metrics)
+6. **`page.evaluate()` DOM/window manipulation** — dispatch click directly, read React state, set window globals
+
+Only after you've run/evaluated all 6 with concrete negative evidence can you declare Pattern D unreachable. **"It feels hard" is not evidence. Console logs are.**
+
+---
+
 ## Working spec examples by pattern
 
 | Pattern | Example spec | Key feature |
@@ -271,8 +366,10 @@ Read console output for each variant. Healthy signals:
 | A | `PR2219557PagePromotePanel.spec.ts` | Command-bar trigger |
 | A | `PR2219568BookmarkPanel.spec.ts` | Social-bar trigger |
 | A (multi-flight) | `PR2218733AnalyticsPanel.spec.ts` | 6 flights combined |
+| A (**news + REST prereq**) | `PR2225561D9AmplifyHeader.spec.ts` | Create page + publish + REST `PromotedState=2` before `amplifyButton` appears; BEFORE branch needs extra "Update then amplify" popover click |
+| A (**Amplify hub multi-step**) | `PR2225561D8CampaignCreation.spec.ts` | viva-amplify.aspx + "Create a campaign" → alertdialog → "Blank campaign" → drawer |
 | B+C (REST + multi-user) | `PR2219504LikedByPanel.spec.ts` | admin posts comment, nonAdmin likes |
-| D (probe first, escalate only if unreachable) | — | PR 2219485 PlanCreation: probe Planner picker → 0 results → skipped; PR 2225561 Amplify drawers: probe `/_layouts/15/viva-amplify.aspx` → 200 + "Create a campaign" present → capture proceeds via campaign flow |
+| D (probe first, escalate only if unreachable) | — | PR 2219485 PlanCreation: probe Planner picker → 0 results → skipped; PR 2225561 D3 CustomizeView: source `options.length !== 0` guard + backend Analytics `AudienceIsEveryone` data gate → unreachable on synthetic tenant → prBuildCount evidence + explanation doc |
 
 ---
 
