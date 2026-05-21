@@ -5,5 +5,5 @@
     "email": "v-ziqyang@microsoft.com"
   },
   "description": "Capture BEFORE/AFTER screenshots for SharePoint client PRs on the FIC synthetic tenant — reads PR description + changed files, writes a custom spec per PR (creates pages, seeds REST data, toggles list settings, pulls in a second user as needed), runs it, returns screenshots ready to paste into the PR description",
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
